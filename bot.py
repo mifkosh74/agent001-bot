@@ -242,8 +242,16 @@ def main():
     if config["legal_ready"] and not all(config.get(k) for k in ("operator_name", "contact_email")):
         raise SystemExit("Complete operator details before enabling LEGAL_READY.")
     api = Telegram(token)
-    info = api.call("getMe")
-    webhook = api.call("getWebhookInfo")
+    while True:
+        try:
+            info = api.call("getMe")
+            webhook = api.call("getWebhookInfo")
+            break
+        except ApiError as error:
+            if error.code == 401:
+                raise SystemExit("Invalid bot token.") from None
+            log.warning("Waiting for Telegram connection; code=%s", error.code)
+            time.sleep(max(5, min(error.retry_after, 300)))
     if webhook.get("url"):
         raise SystemExit("An existing webhook is configured. No changes made.")
     data_dir = Path(os.environ.get("DATA_DIR", ROOT / "data"))
