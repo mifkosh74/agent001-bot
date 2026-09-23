@@ -1,6 +1,7 @@
 import sqlite3
 import unittest
-from bot import Bot, ROOT, load_config
+from unittest.mock import patch
+from bot import ApiError, Bot, ROOT, Telegram, load_config
 
 
 class FakeAPI:
@@ -66,6 +67,45 @@ class FlowTests(unittest.TestCase):
         self.consent()
         self.consent()
         self.assertEqual(self.db.execute('SELECT count(*) FROM consents').fetchone()[0], 1)
+
+    def test_callback_ack_failure_does_not_block_consent(self):
+        original = self.api.call
+        for code in (0, 400, 429, 500):
+            with self.subTest(code=code):
+                def failing_ack(method, **params):
+                    if method == 'answerCallbackQuery':
+                        raise ApiError(code)
+                    return original(method, **params)
+                with patch.object(self.api, 'call', side_effect=failing_ack):
+                    self.consent()
+                self.assertEqual(self.bot.row(123)[1:], (1, 0))
+        self.assertEqual(self.db.execute('SELECT count(*) FROM consents').fetchone()[0], 1)
+        self.assertEqual(sum('ИИ-бандит' in p.get('text', '') for _, p in self.api.calls), 4)
+
+    def test_send_failure_remains_retryable_after_consent_saved(self):
+        original = self.api.call
+        def failing_send(method, **params):
+            if method == 'sendMessage':
+                raise ApiError(0)
+            return original(method, **params)
+        with patch.object(self.api, 'call', side_effect=failing_send):
+            with self.assertRaises(ApiError):
+                self.consent()
+        self.assertEqual(self.bot.row(123)[1:], (1, 0))
+        self.consent()
+        self.assertEqual(self.db.execute('SELECT count(*) FROM consents').fetchone()[0], 1)
+
+    def test_ack_timeout_is_short_and_logs_do_not_expose_token(self):
+        api = Telegram(' fake-secret\n')
+        for method, timeout in [('answerCallbackQuery', 3), ('getUpdates', 45)]:
+            with patch('bot.urllib.request.urlopen', side_effect=TimeoutError(api.base)) as request:
+                with self.assertLogs('agent001', level='WARNING') as logs:
+                    with self.assertRaises(ApiError):
+                        api.call(method)
+                self.assertEqual(request.call_args.kwargs['timeout'], timeout)
+                self.assertNotIn('fake-secret', '\n'.join(logs.output))
+                self.assertIn('TimeoutError', '\n'.join(logs.output))
+        self.assertEqual(api.base, 'https://api.telegram.org/botfake-secret/')
 
     def test_stale_consent_is_rejected(self):
         self.click('yes:old')

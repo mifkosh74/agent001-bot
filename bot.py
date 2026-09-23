@@ -84,13 +84,15 @@ class ApiError(Exception):
 
 class Telegram:
     def __init__(self, token):
-        self.base = "https://api.telegram.org/bot" + token + "/"
+        self.base = "https://api.telegram.org/bot" + token.strip() + "/"
 
     def call(self, method, **params):
         request = urllib.request.Request(self.base + method,
             data=json.dumps(params).encode(), headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(request, timeout=45) as response:
+            # A spinner acknowledgement must not block the subscription flow.
+            timeout = 3 if method == "answerCallbackQuery" else 45
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 result = json.load(response)
         except urllib.error.HTTPError as error:
             try:
@@ -98,7 +100,12 @@ class Telegram:
             except Exception:
                 payload = {}
             raise ApiError(error.code, payload.get("parameters", {}).get("retry_after", 0)) from None
-        except (OSError, ValueError):
+        except (OSError, ValueError) as error:
+            reason = getattr(error, "reason", error)
+            # Never log exception text: it may contain the URL and bot token.
+            log.warning("Telegram transport failure: method=%s type=%s reason=%s errno=%s",
+                        method, type(error).__name__, type(reason).__name__,
+                        getattr(reason, "errno", None))
             raise ApiError(0) from None
         if not result.get("ok"):
             raise ApiError(result.get("error_code", 0))
@@ -161,8 +168,9 @@ class Bot:
             try:
                 self.api.call("answerCallbackQuery", callback_query_id=callback["id"])
             except ApiError as error:
-                if error.code != 400:
+                if error.code == 401:
                     raise
+                log.warning("Callback acknowledgement failed; continuing action; code=%s", error.code)
         raw = message.get("text", "").split()
         command = raw[0].split("@")[0] if raw else ""
         data = callback.get("data", "") if callback else ""
