@@ -100,6 +100,12 @@ class ApiError(Exception):
 class Telegram:
     def __init__(self, token):
         self.base = "https://api.telegram.org/bot" + token.strip() + "/"
+        # Some hosts can't route to Telegram's IPs at all; TELEGRAM_PROXY lets
+        # outbound API calls go through an HTTP(S) proxy instead.
+        proxy_url = os.environ.get("TELEGRAM_PROXY", "").strip()
+        if proxy_url:
+            urllib.request.install_opener(urllib.request.build_opener(
+                urllib.request.ProxyHandler({"https": proxy_url, "http": proxy_url})))
 
     def call(self, method, **params):
         request = urllib.request.Request(self.base + method,
