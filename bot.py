@@ -4,6 +4,7 @@ import html
 import json
 import logging
 import os
+import socket
 import sqlite3
 import time
 import urllib.error
@@ -13,6 +14,20 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 log = logging.getLogger("agent001")
+
+# Some containerized hosts advertise an IPv6 address with no working IPv6 route,
+# so urllib picks the AAAA record first and every request fails with
+# "Network is unreachable" (errno 101) even though IPv4 works fine.
+# Restricting resolution to IPv4 avoids that dead route entirely.
+_getaddrinfo = socket.getaddrinfo
+
+
+def _ipv4_only_getaddrinfo(host, *args, **kwargs):
+    results = [ai for ai in _getaddrinfo(host, *args, **kwargs) if ai[0] == socket.AF_INET]
+    return results or _getaddrinfo(host, *args, **kwargs)
+
+
+socket.getaddrinfo = _ipv4_only_getaddrinfo
 
 
 def now():
