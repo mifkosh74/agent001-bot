@@ -32,12 +32,10 @@ class FlowTests(unittest.TestCase):
             'message': {'chat': {'id': 123, 'type': 'private'}}}})
 
     def consent(self):
-        self.click('yes:' + self.bot.revision)
+        self.message('/start')
 
-    def test_no_storage_before_consent_or_on_refusal(self):
-        self.message('/start source_campaign')
-        self.click('doc:consent')
-        self.click('no')
+    def test_no_storage_before_start(self):
+        self.message('/privacy')
         self.assertIsNone(self.bot.row(123))
         self.assertEqual(self.db.execute('SELECT count(*) FROM consents').fetchone()[0], 0)
 
@@ -46,11 +44,14 @@ class FlowTests(unittest.TestCase):
         self.click('lesson')
         self.assertEqual(self.bot.row(123)[1:], (1, 0))
         self.assertTrue(any('ИИ-бандит' in p.get('text', '') for _, p in self.api.calls))
-        self.assertEqual(self.db.execute('SELECT kind FROM consents').fetchall(), [('personal_data',)])
+        self.assertEqual(self.db.execute('SELECT kind FROM consents').fetchall(), [('personal_data_and_marketing',)])
+
+    def test_start_grants_marketing_consent_by_default(self):
+        self.consent()
+        self.assertEqual(self.bot.row(123)[1:], (1, 1))
 
     def test_optional_marketing_and_unsubscribe(self):
         self.consent()
-        self.click('ads:' + self.bot.revision)
         self.assertEqual(self.bot.row(123)[1:], (1, 1))
         self.message('/unsubscribe')
         self.assertEqual(self.bot.row(123)[1:], (1, 0))
@@ -60,15 +61,14 @@ class FlowTests(unittest.TestCase):
         self.message('/delete')
         self.assertIsNone(self.bot.row(123))
         self.assertEqual(self.db.execute('SELECT count(*) FROM consents').fetchone()[0], 0)
-        self.click('ads:' + self.bot.revision)
-        self.assertIsNone(self.bot.row(123))
 
     def test_repeated_consent_is_idempotent(self):
         self.consent()
         self.consent()
         self.assertEqual(self.db.execute('SELECT count(*) FROM consents').fetchone()[0], 1)
 
-    def test_callback_ack_failure_does_not_block_consent(self):
+    def test_callback_ack_failure_does_not_block_marketing_toggle(self):
+        self.consent()
         original = self.api.call
         for code in (0, 400, 429, 500):
             with self.subTest(code=code):
@@ -77,10 +77,9 @@ class FlowTests(unittest.TestCase):
                         raise ApiError(code)
                     return original(method, **params)
                 with patch.object(self.api, 'call', side_effect=failing_ack):
-                    self.consent()
-                self.assertEqual(self.bot.row(123)[1:], (1, 0))
+                    self.click('ads:' + self.bot.revision)
+                self.assertEqual(self.bot.row(123)[1:], (1, 1))
         self.assertEqual(self.db.execute('SELECT count(*) FROM consents').fetchone()[0], 1)
-        self.assertEqual(sum('ИИ-бандит' in p.get('text', '') for _, p in self.api.calls), 4)
 
     def test_send_failure_remains_retryable_after_consent_saved(self):
         original = self.api.call
@@ -91,7 +90,7 @@ class FlowTests(unittest.TestCase):
         with patch.object(self.api, 'call', side_effect=failing_send):
             with self.assertRaises(ApiError):
                 self.consent()
-        self.assertEqual(self.bot.row(123)[1:], (1, 0))
+        self.assertEqual(self.bot.row(123)[1:], (1, 1))
         self.consent()
         self.assertEqual(self.db.execute('SELECT count(*) FROM consents').fetchone()[0], 1)
 
@@ -107,17 +106,12 @@ class FlowTests(unittest.TestCase):
                 self.assertIn('TimeoutError', '\n'.join(logs.output))
         self.assertEqual(api.base, 'https://api.telegram.org/botfake-secret/')
 
-    def test_stale_consent_is_rejected(self):
-        self.click('yes:old')
-        self.assertIsNone(self.bot.row(123))
-
-    def test_stopped_user_requires_fresh_consent(self):
+    def test_start_after_stop_regrants_consent(self):
         self.consent()
         self.message('/stop')
-        self.message('/start')
         self.assertEqual(self.bot.row(123)[1:], (0, 0))
-        self.consent()
-        self.assertEqual(self.bot.row(123)[1:], (1, 0))
+        self.message('/start')
+        self.assertEqual(self.bot.row(123)[1:], (1, 1))
 
     def test_expiration(self):
         self.consent()
@@ -148,7 +142,7 @@ class FlowTests(unittest.TestCase):
     def test_restart_retains_subscription(self):
         self.consent()
         restarted = Bot(self.api, self.db, self.cfg)
-        self.assertEqual(restarted.row(123)[1:], (1, 0))
+        self.assertEqual(restarted.row(123)[1:], (1, 1))
 
 
 if __name__ == '__main__':

@@ -54,7 +54,7 @@ def documents(c):
 
 Оператор: {operator}
 
-Цель обработки: предоставить запрошенные материалы и обеспечить работу подписки в боте. При отдельном согласии — направлять информационные и рекламные сообщения о материалах, обучении и курсе «АГЕНТ001».
+Цель обработки: предоставить запрошенные материалы, обеспечить работу подписки в боте и направлять информационные и рекламные сообщения о материалах, обучении и курсе «АГЕНТ001» — если пользователь не откажется от них командой /unsubscribe.
 
 Данные: Telegram ID и ID личного чата; дата, время, содержание и версия согласий; статус подписки. Имя профиля, username, номер телефона и содержание произвольных сообщений в базу бота не записываются.
 
@@ -79,7 +79,7 @@ def documents(c):
 
 Согласие действует до достижения цели, отзыва согласия или истечения 12 месяцев с последнего действия в боте — в зависимости от того, что наступит раньше. Отзыв: /delete в боте или письмо на {contact}. После /delete данные удаляются из активной базы. Обработка на иных законных основаниях допускается в предусмотренных законом случаях.
 
-Это согласие не включает согласие на рекламные рассылки: оно запрашивается отдельно.
+Нажимая «Старт» в боте, я также соглашаюсь получать здесь информационные и рекламные сообщения о курсе «АГЕНТ001», обучении и материалах по нейросетям. Эта часть согласия добровольная и не влияет на получение запрошенного бесплатного урока. Отписаться от рассылки: /unsubscribe; полностью отключить сообщения: /stop.
 ''',
         "marketing": f'''СОГЛАСИЕ НА ИНФОРМАЦИОННЫЕ И РЕКЛАМНЫЕ СООБЩЕНИЯ
 Версия {c["documents_version"]}.
@@ -163,12 +163,6 @@ class Bot:
     def row(self, chat):
         return self.db.execute("SELECT consent_revision, active, marketing FROM subscribers WHERE chat_id=?", (chat,)).fetchone()
 
-    def gate(self, chat):
-        self.send(chat, "Перед началом 👇\n\nЧтобы пользоваться ботом и получить запрошенный урок, ознакомься с политикой и отдельным согласием на обработку данных.\n\nНажимая «Даю согласие», ты принимаешь условия документа «Согласие на обработку данных».\n\nОтозвать согласие и удалить данные можно командой /delete.", keyboard(
-            [("Политика обработки данных", "doc:policy")],
-            [("Согласие на обработку данных", "doc:consent")],
-            [("Даю согласие", "yes:" + self.revision), ("Не согласен", "no")]))
-
     def welcome_message(self, chat):
         self.send(chat, self.welcome, {"inline_keyboard": [[{"text": "Забрать инструкции в канале", "url": self.config["channel_url"]}]]})
 
@@ -213,28 +207,19 @@ class Bot:
             if kind in self.docs:
                 self.send(chat, html.escape(self.docs[kind]))
             return
-        if data == "no":
-            self.send(chat, "Окей, подписку не оформляю. Если передумаешь, нажми /start.")
-            return
         if not self.config.get("legal_ready"):
             self.send(chat, "Бот готовится к запуску. Скоро здесь появится запись на бесплатный урок. Пока загляни в канал 👇", {"inline_keyboard": [[{"text": "Перейти в канал", "url": self.config["channel_url"]}]]})
             return
         current = self.row(chat)
-        if data.startswith("yes:"):
-            if data != "yes:" + self.revision:
-                self.gate(chat)
-                return
-            with self.db:
-                if not current or current[0] != self.revision or not current[1]:
-                    timestamp = now()
-                    self.db.execute("INSERT INTO subscribers VALUES(?,?,?,?,1,0) ON CONFLICT(chat_id) DO UPDATE SET consent_revision=excluded.consent_revision, active=1, marketing=0, updated_at=excluded.updated_at", (chat, self.revision, timestamp, timestamp))
-                    self.db.execute("INSERT INTO consents(chat_id,kind,accepted_at,document) VALUES(?,?,?,?)", (chat, "personal_data", timestamp, self.docs["consent"]))
-            self.welcome_message(chat)
-            if not self.row(chat)[2]:
-                self.marketing_prompt(chat)
-            return
         if not current or current[0] != self.revision or not current[1]:
-            self.gate(chat)
+            # Pressing the bot's own Start button is the consent action; the
+            # bot's Telegram description states what that agrees to (policy +
+            # marketing) so there is no in-chat gate before the welcome message.
+            with self.db:
+                timestamp = now()
+                self.db.execute("INSERT INTO subscribers VALUES(?,?,?,?,1,1) ON CONFLICT(chat_id) DO UPDATE SET consent_revision=excluded.consent_revision, active=1, marketing=1, updated_at=excluded.updated_at", (chat, self.revision, timestamp, timestamp))
+                self.db.execute("INSERT INTO consents(chat_id,kind,accepted_at,document) VALUES(?,?,?,?)", (chat, "personal_data_and_marketing", timestamp, self.docs["consent"]))
+            self.welcome_message(chat)
             return
         with self.db:
             self.db.execute("UPDATE subscribers SET updated_at=? WHERE chat_id=?", (now(), chat))
